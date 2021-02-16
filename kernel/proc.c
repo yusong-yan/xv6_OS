@@ -274,7 +274,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  np->mask = p->mask;
   np->parent = p;
 
   // copy saved user registers.
@@ -692,4 +692,14 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+uint64
+nproc_without_unused(void){
+  int i;
+  uint64 number = 0;
+  for(i = 0; i< NPROC; i++){
+	if(proc[i].state != UNUSED) number++;
+  }
+  return number;
 }
