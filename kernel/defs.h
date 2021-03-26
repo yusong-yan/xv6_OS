@@ -86,6 +86,9 @@ void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
 
 // proc.c
+void            proc_kstack_alloc(struct proc *);
+void            proc_kstack_destroy(struct proc *);
+//-----above is implemented functions
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
@@ -158,6 +161,15 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+void            swtch_sapt(pagetable_t);
+void            swtch_sapt_kernel_pagetable(void);
+void            freewalk_proc_kpagetable(pagetable_t);
+pagetable_t     proc_kvminit(void);
+void            proc_free_kpagetable(pagetable_t);
+void            kvmmap_withInputPageTable(pagetable_t, uint64, uint64, uint64, int);
+void            vmprint(pagetable_t);
+//-----above is implemented functions
+pte_t *         walk(pagetable_t, uint64, int);
 void            kvminit(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);

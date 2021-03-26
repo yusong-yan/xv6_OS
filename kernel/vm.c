@@ -4,6 +4,8 @@
 #include "elf.h"
 #include "riscv.h"
 #include "defs.h"
+#include "spinlock.h"
+#include "proc.h"
 #include "fs.h"
 
 /*
@@ -132,7 +134,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -440,3 +442,113 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+
+//IMPLEMENTED FUCTION 
+
+//Print page table 
+void
+vmprintR(pagetable_t pagetable, int level){
+    for(int i = 0; i<512; i++){
+        pte_t pte = pagetable[i];
+        if(pte & PTE_V){ 
+            uint64 child = PTE2PA(pte);
+            if(level == 1){
+                printf(".. %d: pte %p pa %p\n", i, pte, child);
+            }else if (level == 2){
+                printf(".. .. %d: pte %p pa %p\n", i, pte, child);
+            }else{
+                printf(".. .. .. %d: pte %p pa %p\n", i, pte, child);
+            }
+            if((pte&(PTE_R|PTE_W|PTE_X))==0){
+                vmprintR((pagetable_t)child, level+1);
+            }
+        }
+    }
+}
+
+void
+vmprint(pagetable_t pagetable){
+    printf("page table %p\n", pagetable);
+    vmprintR(pagetable, 1);
+}
+//
+
+// add a mapping to the a process's kernel page table.
+// only used when booting.
+// does not flush TLB or enable paging.
+void
+kvmmap_withInputPageTable(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("kvmmap");
+}
+//
+
+//create kernel table for a process
+pagetable_t
+proc_kvminit(){
+  pagetable_t pagetable = uvmcreate();
+  if (pagetable == 0){
+    return 0;
+  }
+  memset(pagetable, 0, PGSIZE);
+  kvmmap_withInputPageTable(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kvmmap_withInputPageTable(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  kvmmap_withInputPageTable(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  kvmmap_withInputPageTable(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  kvmmap_withInputPageTable(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  kvmmap_withInputPageTable(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  kvmmap_withInputPageTable(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return pagetable;
+}
+//
+
+//free a kernel table for a process 
+//(only free memory of kernel stack and the kernel page table)
+void
+proc_free_kpagetable(pagetable_t pagetable){
+ freewalk_proc_kpagetable(pagetable);
+}
+
+//Same as freewalk but will delete all pagetable without clean the leaf physical memory pages
+void
+freewalk_proc_kpagetable(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) ){
+      // this PTE points to a lower-level page table.
+      pagetable[i] = 0;
+      if((pte&(PTE_R|PTE_W|PTE_X))==0){
+        uint64 child = PTE2PA(pte);
+        freewalk_proc_kpagetable((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)pagetable);
+}
+//
+
+//
+//switch sapt to a process's page table
+void
+swtch_sapt(pagetable_t pagetable)
+{
+  w_satp(MAKE_SATP(pagetable));
+  sfence_vma();
+}
+//
+
+//
+//switch sapt to a kernal page table
+void
+swtch_sapt_kernel_pagetable()
+{
+  w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
+}
+//
+
+

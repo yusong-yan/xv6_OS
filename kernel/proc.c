@@ -21,6 +21,7 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -30,19 +31,10 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
   kvminithart();
 }
+
 
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
@@ -120,6 +112,15 @@ found:
     release(&p->lock);
     return 0;
   }
+  //create a kernel table and map everything but kstack 
+  p->kpagetable = proc_kvminit();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  //allocate kstack and map it into it's own kernel table
+  proc_kstack_alloc(p);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -139,8 +140,15 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  //free kstack mem before destroy kpagetable, simply because the 
+  //program need to walk through the page table to find the pa of the kstack
+  proc_kstack_destroy(p);
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kpagetable)
+    proc_free_kpagetable(p->kpagetable);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,6 +481,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        swtch_sapt(p->kpagetable);
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -486,6 +495,7 @@ scheduler(void)
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
+      swtch_sapt_kernel_pagetable();
       asm volatile("wfi");
     }
 #else
@@ -697,3 +707,36 @@ procdump(void)
     printf("\n");
   }
 }
+
+//Implemented function
+
+//allocate kstack for a process and map it in it's kernel page table
+void
+proc_kstack_alloc(struct proc *p){
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  kvmmap_withInputPageTable(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+}
+//
+
+//free kstack for a process
+//free kstack mem before destroy kpagetable, simply because the 
+//program need to walk through the page table to find the pa of the kstack
+void
+proc_kstack_destroy(struct proc *p){
+  if(p->kstack){
+   pte_t* pte = walk(p->kpagetable, p->kstack, 0);
+   if (pte == 0){
+     panic("freeproc, kstack");
+   }
+   kfree((void*)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+}
+//
